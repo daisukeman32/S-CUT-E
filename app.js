@@ -1,0 +1,1062 @@
+// ============================================
+// S-CUT-E  Application Logic
+// ============================================
+
+(function () {
+  'use strict';
+
+  // --- Constants ---
+  const MAX_FILES = 50;
+
+  // --- i18n ---
+  const i18n = {
+    ja: {
+      themeBtn_night: 'Day',
+      themeBtn_day: 'Night',
+      langBtn: 'English',
+      ffmpegLoading: 'FFmpegを読み込み中...',
+      ffmpegReady: 'FFmpeg準備完了',
+      ffmpegFailed: 'FFmpegの読み込みに失敗しました。SharedArrayBuffer対応ブラウザをご使用ください。',
+      step1Title: 'Step 1 : フレームカット',
+      dropOverlay: 'MP4ファイルまたはフォルダをドロップ',
+      dropText: 'MP4ファイルまたはフォルダをここにドロップ',
+      dropSub: 'またはクリックして選択',
+      dropLimit: '推奨: 最大約30ファイル',
+      audioOff: 'Audio OFF',
+      audioOn: 'Audio ON',
+      audioNote: '音声もトリムされます（繋ぎ目にノイズが出る可能性あり）',
+      fpsWarn: '60fps超: フレーム補間済みの可能性',
+      cutBtn: 'CUT',
+      cutting: 'カット中',
+      probing: '解析中',
+      cutDone: '完了',
+      cutError: 'カットエラー',
+      download: 'Download',
+      step2Title: 'Step 2 : 連結',
+      mergeNote: 'ドラッグで並び替え',
+      mergeBtn: 'MERGE',
+      mergeDownload: '連結ファイルをダウンロード',
+      mergePreparing: 'ファイル準備中...',
+      mergeWriting: 'ファイル書き込み中',
+      merging: '連結中...',
+      mergeComplete: '連結完了',
+      mergeFailed: '連結失敗',
+      warningMismatch: '解像度/FPSが一致しません。連結が失敗するか映像に問題が出る可能性があります。',
+      fileCount: 'ファイル',
+    },
+    en: {
+      themeBtn_night: 'Day',
+      themeBtn_day: 'Night',
+      langBtn: 'Japanese',
+      ffmpegLoading: 'Loading FFmpeg...',
+      ffmpegReady: 'FFmpeg ready',
+      ffmpegFailed: 'FFmpeg load failed. Use a browser with SharedArrayBuffer support.',
+      step1Title: 'Step 1 : Frame Cut',
+      dropOverlay: 'Drop MP4 files or folders',
+      dropText: 'Drop MP4 files or folders here',
+      dropSub: 'or click to select',
+      dropLimit: 'Up to ~30 files recommended',
+      audioOff: 'Audio OFF',
+      audioOn: 'Audio ON',
+      audioNote: 'Audio will be trimmed (may cause glitch at joins)',
+      fpsWarn: '>60fps: likely frame-interpolated',
+      cutBtn: 'CUT',
+      cutting: 'Cutting',
+      probing: 'Probing',
+      cutDone: 'Done',
+      cutError: 'Cut error',
+      download: 'Download',
+      step2Title: 'Step 2 : Merge',
+      mergeNote: 'Drag to reorder',
+      mergeBtn: 'MERGE',
+      mergeDownload: 'Download Merged',
+      mergePreparing: 'Preparing files...',
+      mergeWriting: 'Writing file',
+      merging: 'Merging...',
+      mergeComplete: 'Merge complete',
+      mergeFailed: 'Merge failed',
+      warningMismatch: 'Resolution/FPS mismatch detected. Merge may fail or produce artifacts.',
+      fileCount: 'file(s)',
+    }
+  };
+
+  let currentLang = 'ja';
+
+  function t(key) {
+    return (i18n[currentLang] && i18n[currentLang][key]) || key;
+  }
+
+  function applyI18n() {
+    document.querySelectorAll('[data-i18n]').forEach(elem => {
+      const key = elem.getAttribute('data-i18n');
+      if (key === 'themeBtn') {
+        const theme = document.documentElement.getAttribute('data-theme');
+        elem.textContent = t('themeBtn_' + theme);
+      } else {
+        elem.textContent = t(key);
+      }
+    });
+    // Update lang toggle button text
+    el.langToggle.textContent = t('langBtn');
+    // Update audio label
+    updateAudioLabel();
+    // Update ffmpeg status text if loaded
+    if (ffmpegReady) {
+      el.ffmpegStatus.classList.add('loaded');
+    }
+  }
+
+  // --- State ---
+  let ffmpeg = null;
+  // Read File as Uint8Array (replaces fetchFile for reliability)
+  async function readFileAsUint8Array(file) {
+    const buf = await file.arrayBuffer();
+    return new Uint8Array(buf);
+  }
+  let ffmpegReady = false;
+  let uploadedFiles = [];
+  let cutResults = [];
+  let mergeOrder = [];
+  let draggedItem = null;
+  let isProcessing = false;
+  let dragCounter = 0;
+
+  // --- DOM Elements ---
+  const el = {
+    langToggle:        document.getElementById('langToggle'),
+    themeToggle:       document.getElementById('themeToggle'),
+    ffmpegStatus:      document.getElementById('ffmpegStatus'),
+    dropOverlay:       document.getElementById('dropOverlay'),
+    dropZone:          document.getElementById('dropZone'),
+    fileInput:         document.getElementById('fileInput'),
+    audioToggle:       document.getElementById('audioToggle'),
+    audioToggleText:   document.getElementById('audioToggleText'),
+    audioNote:         document.getElementById('audioNote'),
+    fileList:          document.getElementById('fileList'),
+    cutBtn:            document.getElementById('cutBtn'),
+    progressSection:   document.getElementById('progressSection'),
+    progressFill:      document.getElementById('progressFill'),
+    progressText:      document.getElementById('progressText'),
+    cutResults:        document.getElementById('cutResults'),
+    mergeSection:      document.getElementById('mergeSection'),
+    mergeList:         document.getElementById('mergeList'),
+    mergeWarning:      document.getElementById('mergeWarning'),
+    mergeBtn:          document.getElementById('mergeBtn'),
+    mergeProgressSection: document.getElementById('mergeProgressSection'),
+    mergeProgressFill: document.getElementById('mergeProgressFill'),
+    mergeProgressText: document.getElementById('mergeProgressText'),
+    mergeResult:       document.getElementById('mergeResult'),
+    mergeDownloadBtn:  document.getElementById('mergeDownloadBtn'),
+  };
+
+  // ============================================
+  // FFmpeg Initialization
+  // ============================================
+
+  async function initFFmpeg() {
+    try {
+      const { createFFmpeg } = FFmpeg;
+
+      ffmpeg = createFFmpeg({
+        log: false,
+        corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+        progress: ({ ratio }) => {
+          if (!isProcessing) return;
+          const pct = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+          updateProgress(pct);
+        }
+      });
+
+      await ffmpeg.load();
+      ffmpegReady = true;
+      el.ffmpegStatus.classList.add('loaded');
+      console.log('FFmpeg loaded successfully');
+
+      // Enable CUT button if files already queued
+      updateCutButton();
+
+      // Probe any files that were loaded before FFmpeg was ready
+      await probeAllPending();
+    } catch (err) {
+      const statusSpan = el.ffmpegStatus.querySelector('span') || el.ffmpegStatus;
+      statusSpan.textContent = t('ffmpegFailed');
+      el.ffmpegStatus.querySelector('.loading-spinner-small')?.remove();
+      console.error('FFmpeg load error:', err);
+    }
+  }
+
+  // ============================================
+  // Theme Toggle
+  // ============================================
+
+  function initTheme() {
+    const saved = localStorage.getItem('scute-theme');
+    if (saved === 'day') {
+      document.documentElement.setAttribute('data-theme', 'day');
+    }
+    updateThemeButton();
+
+    el.themeToggle.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'night' ? 'day' : 'night';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('scute-theme', next);
+      updateThemeButton();
+    });
+  }
+
+  function updateThemeButton() {
+    const theme = document.documentElement.getAttribute('data-theme');
+    el.themeToggle.textContent = t('themeBtn_' + theme);
+  }
+
+  // ============================================
+  // Language Toggle
+  // ============================================
+
+  function initLang() {
+    const saved = localStorage.getItem('scute-lang');
+    if (saved) {
+      currentLang = saved;
+      document.documentElement.setAttribute('data-lang', currentLang);
+    }
+    applyI18n();
+
+    el.langToggle.addEventListener('click', () => {
+      currentLang = currentLang === 'ja' ? 'en' : 'ja';
+      document.documentElement.setAttribute('data-lang', currentLang);
+      localStorage.setItem('scute-lang', currentLang);
+      applyI18n();
+      updateThemeButton();
+      // Re-render dynamic content
+      renderFileList();
+      if (cutResults.length > 0) renderCutResults();
+      if (mergeOrder.length > 0) renderMergeList();
+    });
+  }
+
+  // ============================================
+  // Audio Toggle
+  // ============================================
+
+  function initAudioToggle() {
+    updateAudioLabel();
+    el.audioToggle.addEventListener('change', updateAudioLabel);
+  }
+
+  function updateAudioLabel() {
+    const on = el.audioToggle.checked;
+    el.audioToggleText.textContent = on ? t('audioOn') : t('audioOff');
+    el.audioNote.textContent = on ? t('audioNote') : '';
+  }
+
+  // ============================================
+  // File Upload
+  // ============================================
+
+  function initUpload() {
+    el.dropZone.addEventListener('click', (e) => {
+      if (e.target === el.fileInput) return;
+      el.fileInput.click();
+    });
+
+    el.fileInput.addEventListener('change', (e) => {
+      collectAndHandle(e.target.files);
+      el.fileInput.value = '';
+    });
+
+    // Drop zone local (visual feedback only)
+    el.dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      el.dropZone.classList.add('drag-over');
+    });
+    el.dropZone.addEventListener('dragleave', () => {
+      el.dropZone.classList.remove('drag-over');
+    });
+    el.dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      el.dropZone.classList.remove('drag-over');
+    });
+
+    // Full-page drag & drop (external files only)
+    function isExternalFileDrag(e) {
+      return e.dataTransfer && e.dataTransfer.types &&
+        (e.dataTransfer.types.indexOf('Files') !== -1 || e.dataTransfer.types.includes('Files'));
+    }
+
+    document.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      if (!isExternalFileDrag(e)) return;
+      dragCounter++;
+      el.dropOverlay.classList.remove('hidden');
+    });
+
+    document.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      if (!isExternalFileDrag(e)) return;
+      dragCounter--;
+      if (dragCounter <= 0) {
+        dragCounter = 0;
+        el.dropOverlay.classList.add('hidden');
+      }
+    });
+
+    document.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    });
+
+    document.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      if (!isExternalFileDrag(e)) return;
+      dragCounter = 0;
+      el.dropOverlay.classList.add('hidden');
+
+      const items = e.dataTransfer.items;
+      if (items && items.length > 0 && items[0].webkitGetAsEntry) {
+        const files = await collectFromEntries(items);
+        collectAndHandle(files);
+      } else {
+        collectAndHandle(e.dataTransfer.files);
+      }
+    });
+  }
+
+  // Recursively collect MP4 from folders
+  async function collectFromEntries(items) {
+    const files = [];
+
+    async function traverseEntry(entry) {
+      if (files.length >= MAX_FILES) return;
+
+      if (entry.isFile) {
+        const file = await new Promise((resolve) => entry.file(resolve));
+        if (file.name.toLowerCase().endsWith('.mp4')) {
+          files.push(file);
+        }
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        const entries = await new Promise((resolve) => {
+          const all = [];
+          function readBatch() {
+            reader.readEntries((batch) => {
+              if (batch.length === 0) {
+                resolve(all);
+              } else {
+                all.push(...batch);
+                readBatch();
+              }
+            });
+          }
+          readBatch();
+        });
+        for (const child of entries) {
+          if (files.length >= MAX_FILES) break;
+          await traverseEntry(child);
+        }
+      }
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      if (files.length >= MAX_FILES) break;
+      const entry = items[i].webkitGetAsEntry();
+      if (entry) await traverseEntry(entry);
+    }
+
+    return files;
+  }
+
+  async function collectAndHandle(fileListOrArray) {
+    const files = Array.from(fileListOrArray).filter(f =>
+      f.name.toLowerCase().endsWith('.mp4')
+    );
+    if (files.length === 0) return;
+    await handleFiles(files);
+  }
+
+  async function handleFiles(filesArray) {
+    const files = Array.from(filesArray);
+    if (files.length === 0) return;
+
+    for (const file of files) {
+      if (uploadedFiles.length >= MAX_FILES) break;
+      if (!file.name.toLowerCase().endsWith('.mp4')) continue;
+      if (uploadedFiles.some(u => u.name === file.name && u.file.size === file.size)) continue;
+      uploadedFiles.push({ file, name: file.name, fps: 0, probedFps: 0, totalFrames: 0, width: 0, height: 0, duration: 0, probed: false, fpsWarning: false, cut: false });
+    }
+
+    // Quick metadata via HTML5 Video (instant, rough)
+    for (const entry of uploadedFiles) {
+      if (entry.fps === 0) {
+        await detectMetadata(entry);
+      }
+    }
+
+    renderFileList();
+    updateCutButton();
+
+    // Probe with FFmpeg for accurate values (if ready)
+    await probeAllPending();
+  }
+
+  // Probe all un-probed files with FFmpeg
+  async function probeAllPending() {
+    if (!ffmpegReady) return;
+
+    const pending = uploadedFiles.filter(e => !e.probed);
+    if (pending.length === 0) return;
+
+    for (let i = 0; i < pending.length; i++) {
+      const entry = pending[i];
+      try {
+        const fileData = await readFileAsUint8Array(entry.file);
+        const inputName = `probe_${i}.mp4`;
+        const probe = await probeFile(fileData, inputName);
+
+        entry.probed = true;
+        if (probe.fps > 0) entry.probedFps = probe.fps;
+        if (probe.totalFrames > 0) entry.totalFrames = probe.totalFrames;
+        if (probe.width > 0) { entry.width = probe.width; entry.height = probe.height; }
+        if (probe.totalFrames > 0 && probe.fps > 0) {
+          entry.duration = probe.totalFrames / probe.fps;
+        }
+
+        // Use probed fps
+        entry.fps = entry.probedFps;
+
+        // FPS warning: > 60fps likely frame-interpolated
+        if (entry.probedFps > 60) {
+          entry.fpsWarning = true;
+          console.warn(`[probe] ${entry.name}: ${entry.probedFps}fps - likely frame-interpolated`);
+        }
+
+      } catch (err) {
+        console.error('Probe error for', entry.name, err);
+        entry.probed = true;  // mark as probed to avoid retry
+        // Recovery
+        try {
+          ffmpeg.setLogger(() => {});
+          ffmpeg.exit();
+        } catch (e) {}
+        try {
+          await ffmpeg.load();
+        } catch (e) {
+          ffmpegReady = false;
+          break;
+        }
+      }
+    }
+
+    // Update UI with probed values
+    renderFileList();
+    updateCutButton();
+  }
+
+  // ============================================
+  // Metadata Detection (HTML5 Video + requestVideoFrameCallback)
+  // ============================================
+
+  async function detectMetadata(entry) {
+    const meta = await getVideoMeta(entry.file);
+    entry.width = meta.width;
+    entry.height = meta.height;
+    entry.duration = meta.duration;
+    entry.fps = meta.fps;
+    entry.totalFrames = Math.round(meta.duration * meta.fps);
+  }
+
+  function getVideoMeta(file) {
+    return new Promise((resolve) => {
+      let resolved = false;
+      function done(result) {
+        if (resolved) return;
+        resolved = true;
+        resolve(result);
+      }
+
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
+
+      const url = URL.createObjectURL(file);
+      let fpsTimeout = null;
+
+      // Global timeout: if nothing works in 5s, return defaults
+      const globalTimeout = setTimeout(() => {
+        cleanup();
+        done({ duration: 0, width: 0, height: 0, fps: 30 });
+      }, 5000);
+
+      function cleanup() {
+        clearTimeout(globalTimeout);
+        if (fpsTimeout) clearTimeout(fpsTimeout);
+        try { video.pause(); } catch (e) {}
+        URL.revokeObjectURL(url);
+      }
+
+      video.onloadedmetadata = () => {
+        const base = {
+          duration: video.duration,
+          width: video.videoWidth,
+          height: video.videoHeight,
+        };
+
+        // Try requestVideoFrameCallback for precise fps (2s timeout)
+        if ('requestVideoFrameCallback' in video) {
+          let count = 0;
+          let firstTime = 0;
+
+          fpsTimeout = setTimeout(() => {
+            // fps detection timed out (H.265 can't play, etc.)
+            cleanup();
+            base.fps = 30;
+            done(base);
+          }, 2000);
+
+          function onFrame(now, metadata) {
+            if (resolved) return;
+            if (count === 0) firstTime = metadata.mediaTime;
+            count++;
+            if (count >= 6) {
+              cleanup();
+              const elapsed = metadata.mediaTime - firstTime;
+              base.fps = elapsed > 0 ? snapFps((count - 1) / elapsed) : 30;
+              done(base);
+              return;
+            }
+            video.requestVideoFrameCallback(onFrame);
+          }
+
+          video.requestVideoFrameCallback(onFrame);
+          video.play().catch(() => {
+            cleanup();
+            base.fps = 30;
+            done(base);
+          });
+        } else {
+          cleanup();
+          base.fps = 30;
+          done(base);
+        }
+      };
+
+      video.onerror = () => {
+        // Browser can't parse this file at all (H.265 on Firefox, etc.)
+        // Still allow upload - FFmpeg can handle it
+        cleanup();
+        done({ duration: 0, width: 0, height: 0, fps: 30 });
+      };
+
+      video.src = url;
+    });
+  }
+
+  // Snap to nearest standard fps
+  function snapFps(raw) {
+    const common = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60];
+    let best = 30;
+    let bestDiff = Infinity;
+    for (const f of common) {
+      const diff = Math.abs(raw - f);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = f;
+      }
+    }
+    return best;
+  }
+
+  // ============================================
+  // File List Rendering
+  // ============================================
+
+  function renderFileList() {
+    if (uploadedFiles.length === 0) {
+      el.fileList.classList.add('hidden');
+      return;
+    }
+
+    el.fileList.classList.remove('hidden');
+    el.fileList.innerHTML = uploadedFiles.map((entry, i) => {
+      const statusClass = entry.fpsWarning ? ' file-item-warn' : (entry.cut ? ' file-item-done' : '');
+      const probedLabel = entry.probed ? '' : ' <span class="file-item-probing">...</span>';
+      const cutBadge = entry.cut ? ' <span class="file-item-badge">CUT</span>' : '';
+      const warnLabel = entry.fpsWarning ? `<div class="file-item-warning">${t('fpsWarn')}</div>` : '';
+      return `
+        <div class="file-item${statusClass}" data-index="${i}">
+          <div class="file-item-info">
+            <span class="file-item-name">${escapeHtml(entry.name)}${cutBadge}</span>
+            <span class="file-item-meta">
+              <span>${entry.width}x${entry.height}</span>
+              <span>${entry.probedFps || entry.fps}fps</span>
+              <span>${entry.totalFrames}f</span>
+              ${probedLabel}
+            </span>
+            ${warnLabel}
+          </div>
+          <button class="file-item-remove" data-index="${i}">&times;</button>
+        </div>
+      `;
+    }).join('');
+
+    el.fileList.querySelectorAll('.file-item-remove').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index);
+        uploadedFiles.splice(idx, 1);
+        renderFileList();
+        updateCutButton();
+      });
+    });
+  }
+
+  function updateCutButton() {
+    const hasUncut = uploadedFiles.some(e => !e.cut);
+    if (uploadedFiles.length > 0 && hasUncut) {
+      el.cutBtn.classList.remove('hidden');
+      el.cutBtn.disabled = !ffmpegReady;
+    } else {
+      el.cutBtn.classList.add('hidden');
+      el.cutBtn.disabled = true;
+    }
+  }
+
+  // ============================================
+  // Frame Cut
+  // ============================================
+
+  // --- Pass 1: Probe with FFmpeg to get exact fps & frame count ---
+  async function probeFile(fileData, inputName) {
+    ffmpeg.FS('writeFile', inputName, fileData);
+
+    let probeLog = '';
+    ffmpeg.setLogger(({ message }) => { probeLog += message + '\n'; });
+
+    // -c copy -f null - : decode nothing, just count frames
+    await ffmpeg.run('-i', inputName, '-map', '0:v:0', '-c', 'copy', '-f', 'null', '-');
+
+    ffmpeg.setLogger(() => {});
+
+    // Parse fps from input stream info (e.g. "30 fps" or "23.98 fps")
+    const fpsMatch = probeLog.match(/(\d+(?:\.\d+)?)\s*fps/);
+    const fps = fpsMatch ? parseFloat(fpsMatch[1]) : 0;
+
+    // Parse total frame count from final progress line (e.g. "frame=  150")
+    const frameMatches = probeLog.match(/frame=\s*(\d+)/g);
+    const lastMatch = frameMatches ? frameMatches[frameMatches.length - 1].match(/\d+/) : null;
+    const totalFrames = lastMatch ? parseInt(lastMatch[0]) : 0;
+
+    // Parse resolution
+    const resMatch = probeLog.match(/(\d{2,5})x(\d{2,5})/);
+    const width = resMatch ? parseInt(resMatch[1]) : 0;
+    const height = resMatch ? parseInt(resMatch[2]) : 0;
+
+    console.log(`[probe] ${inputName}: ${fps}fps, ${totalFrames}frames, ${width}x${height}`);
+
+    // Reset FS after run
+    ffmpeg.setLogger(() => {});
+    ffmpeg.exit();
+    await ffmpeg.load();
+
+    return { fps, totalFrames, width, height };
+  }
+
+  async function executeCut() {
+    if (isProcessing || uploadedFiles.length === 0 || !ffmpegReady) return;
+
+    // Only cut files that haven't been cut yet
+    const uncutFiles = uploadedFiles.filter(e => !e.cut);
+    if (uncutFiles.length === 0) return;
+
+    isProcessing = true;
+    el.cutBtn.disabled = true;
+
+    el.progressSection.classList.remove('hidden');
+    el.mergeResult.classList.add('hidden');
+
+    const includeAudio = el.audioToggle.checked;
+
+    for (let i = 0; i < uncutFiles.length; i++) {
+      const entry = uncutFiles[i];
+      const pctBase = Math.round((i / uncutFiles.length) * 100);
+
+      try {
+        // Guard: need probed data + at least 3 frames
+        if (!entry.probed || entry.totalFrames < 3 || entry.fps <= 0) {
+          console.warn('Skipping', entry.name, '- not probed or insufficient data');
+          setProgress(pctBase, `${t('cutError')}: ${entry.name}`);
+          entry.cut = true;  // mark to avoid retry
+          continue;
+        }
+
+        setProgress(pctBase, `${t('cutting')} ${i + 1}/${uploadedFiles.length}: ${entry.name}`);
+
+        const fileData = await readFileAsUint8Array(entry.file);
+        const inputName = `input_${i}.mp4`;
+        const outputName = `output_${i}.mp4`;
+
+        ffmpeg.FS('writeFile', inputName, fileData);
+
+        const endFrame = entry.totalFrames - 1;  // exclusive: last frame to NOT include
+
+        const args = ['-i', inputName];
+        args.push('-vf', `trim=start_frame=1:end_frame=${endFrame},setpts=PTS-STARTPTS`);
+
+        if (includeAudio) {
+          const frameDur = 1 / entry.fps;
+          const duration = entry.totalFrames / entry.fps;
+          const aStart = frameDur;
+          const aEnd = duration - frameDur;
+          args.push('-af', `atrim=start=${aStart.toFixed(6)}:end=${aEnd.toFixed(6)},asetpts=PTS-STARTPTS`);
+        } else {
+          args.push('-an');
+        }
+
+        args.push(
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-crf', '23',
+          '-pix_fmt', 'yuv420p',
+          '-movflags', '+faststart',
+          outputName
+        );
+
+        let cutLog = '';
+        ffmpeg.setLogger(({ message }) => { cutLog += message + '\n'; });
+
+        await ffmpeg.run(...args);
+
+        ffmpeg.setLogger(() => {});
+
+        // Parse output frame count from encoding log
+        const frameMatches = cutLog.match(/frame=\s*(\d+)/g);
+        const lastMatch = frameMatches ? frameMatches[frameMatches.length - 1].match(/\d+/) : null;
+        const outFrames = lastMatch ? parseInt(lastMatch[0]) : entry.totalFrames - 2;
+
+        const data = ffmpeg.FS('readFile', outputName);
+
+        console.log(`[cut] ${entry.name}: ${entry.totalFrames} → ${outFrames} frames (${entry.fps}fps)`);
+
+        entry.cut = true;
+
+        cutResults.push({
+          name: entry.name.replace(/\.mp4$/i, '_cut.mp4'),
+          data: new Uint8Array(data),
+          fps: entry.fps,
+          width: entry.width,
+          height: entry.height,
+          frames: outFrames
+        });
+
+        // Reset FS for next file
+        ffmpeg.setLogger(() => {});
+        ffmpeg.exit();
+        await ffmpeg.load();
+
+      } catch (err) {
+        console.error('Cut error for', entry.name, err);
+        setProgress(pctBase, `${t('cutError')}: ${entry.name}`);
+        try {
+          ffmpeg.setLogger(() => {});
+          ffmpeg.exit();
+        } catch (e) {}
+        try {
+          await ffmpeg.load();
+        } catch (e) {
+          ffmpegReady = false;
+          console.error('FFmpeg recovery failed:', e);
+          break;
+        }
+      }
+    }
+
+    setProgress(100, `${t('cutDone')} - ${cutResults.length} ${t('fileCount')}`);
+    isProcessing = false;
+    updateCutButton();  // hide CUT if all files are now cut
+
+    renderFileList();
+    renderCutResults();
+
+    if (cutResults.length > 1) {
+      showMergeSection();
+    }
+  }
+
+  // ============================================
+  // Cut Results
+  // ============================================
+
+  function renderCutResults() {
+    if (cutResults.length === 0) {
+      el.cutResults.classList.add('hidden');
+      return;
+    }
+
+    el.cutResults.classList.remove('hidden');
+    el.cutResults.innerHTML = cutResults.map((r, i) => `
+      <div class="cut-result-item">
+        <div class="cut-result-info">
+          <span class="cut-result-name">${escapeHtml(r.name)}</span>
+          <span class="cut-result-detail">${r.width}x${r.height} / ${r.fps}fps / ${r.frames}f</span>
+        </div>
+        <button class="btn btn-download btn-small" data-index="${i}">${t('download')}</button>
+      </div>
+    `).join('');
+
+    el.cutResults.querySelectorAll('.btn-download').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.index);
+        downloadBlob(cutResults[idx].data, cutResults[idx].name);
+      });
+    });
+  }
+
+  // ============================================
+  // Merge Section
+  // ============================================
+
+  function showMergeSection() {
+    mergeOrder = cutResults.map((_, i) => i);
+    el.mergeSection.classList.remove('hidden');
+    el.mergeResult.classList.add('hidden');
+    el.mergeProgressSection.classList.add('hidden');
+    renderMergeList();
+    validateMerge();
+  }
+
+  function renderMergeList() {
+    el.mergeList.innerHTML = mergeOrder.map((idx, pos) => {
+      const r = cutResults[idx];
+      return `
+        <div class="merge-item" draggable="true" data-pos="${pos}">
+          <span class="merge-item-grip">&#9776;</span>
+          <span class="merge-item-order">${pos + 1}</span>
+          <span class="merge-item-name">${escapeHtml(r.name)}</span>
+          <span class="merge-item-meta">${r.width}x${r.height} ${r.fps}fps</span>
+        </div>
+      `;
+    }).join('');
+
+    setupMergeDragAndDrop();
+  }
+
+  function setupMergeDragAndDrop() {
+    const items = el.mergeList.querySelectorAll('.merge-item');
+
+    items.forEach(item => {
+      item.addEventListener('dragstart', (e) => {
+        draggedItem = item;
+        item.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+
+      item.addEventListener('dragend', () => {
+        item.classList.remove('dragging');
+        draggedItem = null;
+        items.forEach(it => it.classList.remove('drag-over-top', 'drag-over-bottom'));
+      });
+
+      item.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+
+        if (draggedItem && draggedItem !== item) {
+          const rect = item.getBoundingClientRect();
+          const midY = rect.top + rect.height / 2;
+
+          if (e.clientY < midY) {
+            item.classList.add('drag-over-top');
+            item.classList.remove('drag-over-bottom');
+          } else {
+            item.classList.add('drag-over-bottom');
+            item.classList.remove('drag-over-top');
+          }
+        }
+      });
+
+      item.addEventListener('dragleave', () => {
+        item.classList.remove('drag-over-top', 'drag-over-bottom');
+      });
+
+      item.addEventListener('drop', (e) => {
+        e.preventDefault();
+        item.classList.remove('drag-over-top', 'drag-over-bottom');
+
+        if (draggedItem && draggedItem !== item) {
+          const fromPos = parseInt(draggedItem.dataset.pos);
+          let toPos = parseInt(item.dataset.pos);
+
+          const rect = item.getBoundingClientRect();
+          const dropAfter = e.clientY >= rect.top + rect.height / 2;
+
+          const [moved] = mergeOrder.splice(fromPos, 1);
+          // After splice, indices shift if fromPos < toPos
+          if (fromPos < toPos) toPos--;
+          if (dropAfter) toPos++;
+          mergeOrder.splice(toPos, 0, moved);
+
+          renderMergeList();
+          validateMerge();
+        }
+      });
+    });
+  }
+
+  function validateMerge() {
+    if (cutResults.length < 2) return;
+
+    const first = cutResults[mergeOrder[0]];
+    let mismatch = false;
+    const issues = [];
+
+    for (let i = 1; i < mergeOrder.length; i++) {
+      const r = cutResults[mergeOrder[i]];
+      if (r.width !== first.width || r.height !== first.height) {
+        mismatch = true;
+        issues.push(`${r.name}: ${r.width}x${r.height} (expected ${first.width}x${first.height})`);
+      }
+      if (r.fps !== first.fps) {
+        mismatch = true;
+        issues.push(`${r.name}: ${r.fps}fps (expected ${first.fps}fps)`);
+      }
+    }
+
+    if (mismatch) {
+      el.mergeWarning.classList.remove('hidden');
+      el.mergeWarning.textContent = t('warningMismatch') + '\n' + issues.join('\n');
+      el.mergeBtn.disabled = true;
+    } else {
+      el.mergeWarning.classList.add('hidden');
+      el.mergeBtn.disabled = false;
+    }
+  }
+
+  // ============================================
+  // Merge Execution
+  // ============================================
+
+  async function executeMerge() {
+    if (isProcessing || mergeOrder.length < 2) return;
+    isProcessing = true;
+    el.mergeBtn.disabled = true;
+    el.mergeResult.classList.add('hidden');
+
+    el.mergeProgressSection.classList.remove('hidden');
+    setMergeProgress(0, t('mergePreparing'));
+
+    try {
+      let fileListContent = '';
+      for (let i = 0; i < mergeOrder.length; i++) {
+        const r = cutResults[mergeOrder[i]];
+        const fname = `merge_${i}.mp4`;
+        ffmpeg.FS('writeFile', fname, r.data);
+        fileListContent += `file '${fname}'\n`;
+        setMergeProgress(Math.round((i / mergeOrder.length) * 30), `${t('mergeWriting')} ${i + 1}/${mergeOrder.length}...`);
+      }
+
+      ffmpeg.FS('writeFile', 'filelist.txt', new TextEncoder().encode(fileListContent));
+
+      setMergeProgress(30, t('merging'));
+
+      await ffmpeg.run(
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'filelist.txt',
+        '-c', 'copy',
+        '-movflags', '+faststart',
+        'merged.mp4'
+      );
+
+      const mergedData = new Uint8Array(ffmpeg.FS('readFile', 'merged.mp4'));
+
+      // Reset FFmpeg (FS breaks after run)
+      ffmpeg.setLogger(() => {});
+      ffmpeg.exit();
+      await ffmpeg.load();
+
+      setMergeProgress(100, t('mergeComplete'));
+
+      el.mergeResult.classList.remove('hidden');
+      el.mergeDownloadBtn.onclick = () => {
+        downloadBlob(mergedData, 'merged.mp4');
+      };
+
+    } catch (err) {
+      console.error('Merge error:', err);
+      setMergeProgress(0, t('mergeFailed') + ': ' + err.message);
+      try {
+        ffmpeg.setLogger(() => {});
+        ffmpeg.exit();
+      } catch (e) {}
+      try { await ffmpeg.load(); } catch (e) {}
+    }
+
+    isProcessing = false;
+    el.mergeBtn.disabled = false;
+  }
+
+  // ============================================
+  // Progress
+  // ============================================
+
+  function updateProgress(pct) {
+    el.progressFill.style.width = pct + '%';
+  }
+
+  function setProgress(pct, text) {
+    el.progressFill.style.width = pct + '%';
+    el.progressText.textContent = text;
+  }
+
+  function setMergeProgress(pct, text) {
+    el.mergeProgressFill.style.width = pct + '%';
+    el.mergeProgressText.textContent = text;
+  }
+
+  // ============================================
+  // Utilities
+  // ============================================
+
+  function downloadBlob(data, filename) {
+    const blob = new Blob([data], { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // ============================================
+  // Event Bindings & Init
+  // ============================================
+
+  function initEvents() {
+    el.cutBtn.addEventListener('click', executeCut);
+    el.mergeBtn.addEventListener('click', executeMerge);
+  }
+
+  function init() {
+    initTheme();
+    initLang();
+    initAudioToggle();
+    initUpload();
+    initEvents();
+    initFFmpeg();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+
+})();

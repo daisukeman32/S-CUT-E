@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="night" data-lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>S-CUT-E</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Full-page drop overlay -->
+  <div id="dropOverlay" class="drop-overlay hidden">
+    <div class="drop-overlay-inner">
+      <p class="drop-overlay-text" data-i18n="dropOverlay">MP4ファイルまたはフォルダをドロップ</p>
+    </div>
+  </div>
+
+  <!-- Top bar: Language + Theme -->
+  <div class="top-bar">
+    <button id="langToggle" class="top-btn">English</button>
+    <button id="themeToggle" class="top-btn" data-i18n="themeBtn">Day</button>
+  </div>
+
+  <div class="container">
+
+    <!-- Header -->
+    <header class="header">
+      <h1 class="title">S-CUT-E</h1>
+      <p class="subtitle">Loop Video Frame Cutter & Merger</p>
+    </header>
+
+    <!-- FFmpeg Loading (inline status) -->
+    <div id="ffmpegStatus" class="ffmpeg-status">
+      <div class="loading-spinner-small"></div>
+      <span data-i18n="ffmpegLoading">FFmpegを読み込み中...</span>
+    </div>
+
+    <!-- Step 1: Upload & Cut -->
+    <section class="section">
+      <h2 class="section-title" data-i18n="step1Title">Step 1 : フレームカット</h2>
+
+      <!-- Drop Zone -->
+      <div id="dropZone" class="drop-zone">
+        <p class="drop-zone-text" data-i18n="dropText">MP4ファイルまたはフォルダをここにドロップ</p>
+        <p class="drop-zone-sub" data-i18n="dropSub">またはクリックして選択</p>
+        <p class="drop-zone-limit" data-i18n="dropLimit">推奨: 最大約30ファイル</p>
+        <input type="file" id="fileInput" multiple accept="video/mp4,.mp4" class="file-input">
+      </div>
+
+      <!-- Audio Toggle -->
+      <div class="toggle-row">
+        <label class="audio-toggle">
+          <input type="checkbox" id="audioToggle">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-text" id="audioToggleText">Audio OFF</span>
+        </label>
+        <span class="toggle-note" id="audioNote"></span>
+      </div>
+
+      <!-- File List -->
+      <div id="fileList" class="file-list hidden"></div>
+
+      <!-- Cut Button -->
+      <button id="cutBtn" class="btn btn-primary hidden" disabled data-i18n="cutBtn">CUT</button>
+
+      <!-- Progress -->
+      <div id="progressSection" class="progress-section hidden">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <p class="progress-text" id="progressText"></p>
+      </div>
+
+      <!-- Cut Results -->
+      <div id="cutResults" class="cut-results hidden"></div>
+    </section>
+
+    <!-- Step 2: Merge -->
+    <section id="mergeSection" class="section hidden">
+      <h2 class="section-title" data-i18n="step2Title">Step 2 : 連結</h2>
+      <p class="section-note" data-i18n="mergeNote">ドラッグで並び替え</p>
+
+      <div id="mergeList" class="merge-list"></div>
+      <div id="mergeWarning" class="merge-warning hidden"></div>
+
+      <button id="mergeBtn" class="btn btn-primary" data-i18n="mergeBtn">MERGE</button>
+
+      <div id="mergeProgressSection" class="progress-section hidden">
+        <div class="progress-bar">
+          <div class="progress-fill" id="mergeProgressFill"></div>
+        </div>
+        <p class="progress-text" id="mergeProgressText"></p>
+      </div>
+
+      <div id="mergeResult" class="merge-result hidden">
+        <button id="mergeDownloadBtn" class="btn btn-download" data-i18n="mergeDownload">連結ファイルをダウンロード</button>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+  <script src="app.js"></script>
+
+</body>
+</html>
