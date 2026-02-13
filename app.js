@@ -13,6 +13,8 @@
     ja: {
       themeBtn_night: 'Day',
       themeBtn_day: 'Night',
+      themeBtn_x: 'X:明',
+      'themeBtn_x-light': 'Night',
       langBtn: 'English',
       ffmpegLoading: 'FFmpegを読み込み中...',
       ffmpegReady: 'FFmpeg準備完了',
@@ -27,6 +29,7 @@
       audioNote: '音声もトリムされます（繋ぎ目にノイズが出る可能性あり）',
       fpsWarn: '60fps超: フレーム補間済みの可能性',
       cutBtn: 'CUT',
+      resetBtn: 'RESET',
       cutting: 'カット中',
       probing: '解析中',
       cutDone: '完了',
@@ -47,6 +50,8 @@
     en: {
       themeBtn_night: 'Day',
       themeBtn_day: 'Night',
+      themeBtn_x: 'X:Light',
+      'themeBtn_x-light': 'Night',
       langBtn: 'Japanese',
       ffmpegLoading: 'Loading FFmpeg...',
       ffmpegReady: 'FFmpeg ready',
@@ -61,6 +66,7 @@
       audioNote: 'Audio will be trimmed (may cause glitch at joins)',
       fpsWarn: '>60fps: likely frame-interpolated',
       cutBtn: 'CUT',
+      resetBtn: 'RESET',
       cutting: 'Cutting',
       probing: 'Probing',
       cutDone: 'Done',
@@ -133,13 +139,16 @@
     audioToggleText:   document.getElementById('audioToggleText'),
     audioNote:         document.getElementById('audioNote'),
     fileList:          document.getElementById('fileList'),
+    cutActions:        document.getElementById('cutActions'),
     cutBtn:            document.getElementById('cutBtn'),
+    resetBtn:          document.getElementById('resetBtn'),
     progressSection:   document.getElementById('progressSection'),
     progressFill:      document.getElementById('progressFill'),
     progressText:      document.getElementById('progressText'),
     cutResults:        document.getElementById('cutResults'),
     mergeSection:      document.getElementById('mergeSection'),
     mergeList:         document.getElementById('mergeList'),
+    mergeSummary:      document.getElementById('mergeSummary'),
     mergeWarning:      document.getElementById('mergeWarning'),
     mergeBtn:          document.getElementById('mergeBtn'),
     mergeProgressSection: document.getElementById('mergeProgressSection'),
@@ -193,12 +202,20 @@
     const saved = localStorage.getItem('scute-theme');
     if (saved === 'day') {
       document.documentElement.setAttribute('data-theme', 'day');
+    } else if ((saved === 'x' || saved === 'x-light') && localStorage.getItem('scute-xmode') === '1') {
+      document.documentElement.setAttribute('data-theme', saved);
     }
     updateThemeButton();
 
     el.themeToggle.addEventListener('click', () => {
       const current = document.documentElement.getAttribute('data-theme');
-      const next = current === 'night' ? 'day' : 'night';
+      let next;
+      if (current === 'x' || current === 'x-light') {
+        next = 'night';
+        removeXTheme();
+      } else {
+        next = current === 'night' ? 'day' : 'night';
+      }
       document.documentElement.setAttribute('data-theme', next);
       localStorage.setItem('scute-theme', next);
       updateThemeButton();
@@ -207,7 +224,7 @@
 
   function updateThemeButton() {
     const theme = document.documentElement.getAttribute('data-theme');
-    el.themeToggle.textContent = t('themeBtn_' + theme);
+    el.themeToggle.textContent = t('themeBtn_' + (theme || 'night'));
   }
 
   // ============================================
@@ -313,7 +330,14 @@
 
       const items = e.dataTransfer.items;
       if (items && items.length > 0 && items[0].webkitGetAsEntry) {
-        const files = await collectFromEntries(items);
+        // Synchronously grab all entries BEFORE any async work
+        // (DataTransferItemList is cleared after the event handler returns)
+        const entries = [];
+        for (let i = 0; i < items.length; i++) {
+          const entry = items[i].webkitGetAsEntry();
+          if (entry) entries.push(entry);
+        }
+        const files = await collectFromEntries(entries);
         collectAndHandle(files);
       } else {
         collectAndHandle(e.dataTransfer.files);
@@ -321,8 +345,8 @@
     });
   }
 
-  // Recursively collect MP4 from folders
-  async function collectFromEntries(items) {
+  // Recursively collect MP4 from entries (already extracted synchronously)
+  async function collectFromEntries(entries) {
     const files = [];
 
     async function traverseEntry(entry) {
@@ -335,7 +359,7 @@
         }
       } else if (entry.isDirectory) {
         const reader = entry.createReader();
-        const entries = await new Promise((resolve) => {
+        const dirEntries = await new Promise((resolve) => {
           const all = [];
           function readBatch() {
             reader.readEntries((batch) => {
@@ -349,17 +373,16 @@
           }
           readBatch();
         });
-        for (const child of entries) {
+        for (const child of dirEntries) {
           if (files.length >= MAX_FILES) break;
           await traverseEntry(child);
         }
       }
     }
 
-    for (let i = 0; i < items.length; i++) {
+    for (const entry of entries) {
       if (files.length >= MAX_FILES) break;
-      const entry = items[i].webkitGetAsEntry();
-      if (entry) await traverseEntry(entry);
+      await traverseEntry(entry);
     }
 
     return files;
@@ -612,12 +635,25 @@
 
   function updateCutButton() {
     const hasUncut = uploadedFiles.some(e => !e.cut);
-    if (uploadedFiles.length > 0 && hasUncut) {
-      el.cutBtn.classList.remove('hidden');
-      el.cutBtn.disabled = !ffmpegReady;
+    const hasCut = uploadedFiles.some(e => e.cut);
+
+    if (uploadedFiles.length > 0) {
+      el.cutActions.classList.remove('hidden');
+      // CUT button: show if there are uncut files
+      if (hasUncut) {
+        el.cutBtn.classList.remove('hidden');
+        el.cutBtn.disabled = !ffmpegReady;
+      } else {
+        el.cutBtn.classList.add('hidden');
+      }
+      // RESET button: show if there are cut files
+      if (hasCut) {
+        el.resetBtn.classList.remove('hidden');
+      } else {
+        el.resetBtn.classList.add('hidden');
+      }
     } else {
-      el.cutBtn.classList.add('hidden');
-      el.cutBtn.disabled = true;
+      el.cutActions.classList.add('hidden');
     }
   }
 
@@ -777,7 +813,7 @@
     renderFileList();
     renderCutResults();
 
-    if (cutResults.length > 1) {
+    if (cutResults.length >= 1) {
       showMergeSection();
     }
   }
@@ -833,11 +869,64 @@
           <span class="merge-item-order">${pos + 1}</span>
           <span class="merge-item-name">${escapeHtml(r.name)}</span>
           <span class="merge-item-meta">${r.width}x${r.height} ${r.fps}fps</span>
+          <span class="merge-item-actions">
+            <button class="merge-item-btn merge-dup-btn" data-pos="${pos}" title="Duplicate">+</button>
+            <button class="merge-item-btn merge-del-btn" data-pos="${pos}" title="Remove">&times;</button>
+          </span>
         </div>
       `;
     }).join('');
 
+    // Duplicate button
+    el.mergeList.querySelectorAll('.merge-dup-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const pos = parseInt(btn.dataset.pos);
+        mergeOrder.splice(pos + 1, 0, mergeOrder[pos]);
+        renderMergeList();
+        validateMerge();
+      });
+    });
+
+    // Remove button
+    el.mergeList.querySelectorAll('.merge-del-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const pos = parseInt(btn.dataset.pos);
+        if (mergeOrder.length <= 1) return;  // keep at least 1
+        mergeOrder.splice(pos, 1);
+        renderMergeList();
+        validateMerge();
+      });
+    });
+
     setupMergeDragAndDrop();
+    updateMergeSummary();
+  }
+
+  function updateMergeSummary() {
+    if (mergeOrder.length === 0) {
+      el.mergeSummary.textContent = '';
+      return;
+    }
+
+    let totalFrames = 0;
+    let fps = 0;
+    for (const idx of mergeOrder) {
+      const r = cutResults[idx];
+      totalFrames += r.frames;
+      if (!fps) fps = r.fps;
+    }
+
+    const totalSec = fps > 0 ? totalFrames / fps : 0;
+    const min = Math.floor(totalSec / 60);
+    const sec = (totalSec % 60).toFixed(1);
+
+    const durationStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+    const clipCount = mergeOrder.length;
+
+    el.mergeSummary.innerHTML =
+      `${clipCount} clips / ${totalFrames}f &mdash; <span class="merge-summary-duration">${durationStr}</span>`;
   }
 
   function setupMergeDragAndDrop() {
@@ -903,7 +992,11 @@
   }
 
   function validateMerge() {
-    if (cutResults.length < 2) return;
+    if (mergeOrder.length < 2) {
+      el.mergeBtn.disabled = true;
+      el.mergeWarning.classList.add('hidden');
+      return;
+    }
 
     const first = cutResults[mergeOrder[0]];
     let mismatch = false;
@@ -924,11 +1017,10 @@
     if (mismatch) {
       el.mergeWarning.classList.remove('hidden');
       el.mergeWarning.textContent = t('warningMismatch') + '\n' + issues.join('\n');
-      el.mergeBtn.disabled = true;
     } else {
       el.mergeWarning.classList.add('hidden');
-      el.mergeBtn.disabled = false;
     }
+    el.mergeBtn.disabled = false;
   }
 
   // ============================================
@@ -1036,11 +1128,199 @@
   }
 
   // ============================================
+  // X Mode (Easter Egg)
+  // ============================================
+
+  const XMODE_CODE = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','s','c','u','t','e'];
+  let xmodeInput = [];
+  let xmodeUnlocked = false;
+
+  function initXMode() {
+    // Check if previously unlocked
+    xmodeUnlocked = localStorage.getItem('scute-xmode') === '1';
+    if (xmodeUnlocked) {
+      enableXModeUI();
+      // Restore X theme if it was active
+      const saved = localStorage.getItem('scute-theme');
+      if (saved === 'x' || saved === 'x-light') applyXTheme();
+    }
+
+    // Listen for secret code
+    document.addEventListener('keydown', (e) => {
+      if (isProcessing) return;
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      xmodeInput.push(key);
+      // Keep only the last N keys
+      if (xmodeInput.length > XMODE_CODE.length) {
+        xmodeInput.shift();
+      }
+      // Check match
+      if (xmodeInput.length === XMODE_CODE.length &&
+          xmodeInput.every((k, i) => k === XMODE_CODE[i])) {
+        xmodeInput = [];
+        unlockXMode();
+      }
+    });
+  }
+
+  function playUnlockSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      // Browser may suspend AudioContext until user gesture
+      if (ctx.state === 'suspended') ctx.resume();
+
+      // Retro FM game arpeggio: square wave staccato
+      const notes = [523, 659, 784, 1047, 1319]; // C5 E5 G5 C6 E6
+      const speed = 0.1;
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'square';
+        osc.frequency.value = freq;
+        const t0 = ctx.currentTime + i * speed;
+        gain.gain.setValueAtTime(0, t0);
+        gain.gain.linearRampToValueAtTime(0.2, t0 + 0.01);
+        gain.gain.setValueAtTime(0.2, t0 + 0.06);
+        gain.gain.linearRampToValueAtTime(0, t0 + speed);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t0);
+        osc.stop(t0 + speed + 0.01);
+      });
+    } catch (e) {
+      console.warn('Audio playback failed:', e);
+    }
+  }
+
+  function flashUnlockEffect() {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:white;opacity:0.8;pointer-events:none;transition:opacity 0.6s';
+    document.body.appendChild(overlay);
+    requestAnimationFrame(() => {
+      overlay.style.opacity = '0';
+      setTimeout(() => overlay.remove(), 600);
+    });
+  }
+
+  function unlockXMode() {
+    if (xmodeUnlocked) {
+      // Already unlocked — just prompt image change
+      playUnlockSound();
+      promptXImage();
+      return;
+    }
+    xmodeUnlocked = true;
+    localStorage.setItem('scute-xmode', '1');
+    playUnlockSound();
+    flashUnlockEffect();
+    enableXModeUI();
+    // Delay image prompt slightly so flash effect is visible
+    setTimeout(() => promptXImage(), 700);
+  }
+
+  function enableXModeUI() {
+    // Show X button in top bar (if not already there)
+    if (document.getElementById('xModeToggle')) return;
+    const btn = document.createElement('button');
+    btn.id = 'xModeToggle';
+    btn.className = 'top-btn top-btn-x';
+    btn.textContent = 'X';
+    btn.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      const img = localStorage.getItem('scute-xmode-img');
+
+      if (!img) {
+        promptXImage();
+        return;
+      }
+
+      if (current === 'x') {
+        // dark → light
+        document.documentElement.setAttribute('data-theme', 'x-light');
+        localStorage.setItem('scute-theme', 'x-light');
+        applyXTheme();
+      } else if (current === 'x-light') {
+        // light → off (night)
+        document.documentElement.setAttribute('data-theme', 'night');
+        localStorage.setItem('scute-theme', 'night');
+        removeXTheme();
+      } else {
+        // off → dark
+        document.documentElement.setAttribute('data-theme', 'x');
+        localStorage.setItem('scute-theme', 'x');
+        applyXTheme();
+      }
+      updateThemeButton();
+    });
+    document.querySelector('.top-bar').insertBefore(btn, document.querySelector('.top-bar').firstChild);
+  }
+
+  function promptXImage() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', () => {
+      const file = input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        localStorage.setItem('scute-xmode-img', reader.result);
+        document.documentElement.setAttribute('data-theme', 'x');
+        localStorage.setItem('scute-theme', 'x');
+        applyXTheme();
+        updateThemeButton();
+      };
+      reader.readAsDataURL(file);
+    });
+    input.click();
+  }
+
+  function applyXTheme() {
+    const img = localStorage.getItem('scute-xmode-img');
+    if (!img) return;
+    document.body.style.backgroundImage = `url(${img})`;
+    document.body.style.backgroundSize = 'cover';
+    document.body.style.backgroundPosition = 'center top';
+    document.body.style.backgroundRepeat = 'no-repeat';
+    document.body.style.minHeight = '100vh';
+  }
+
+  function removeXTheme() {
+    document.body.style.backgroundImage = '';
+    document.body.style.backgroundSize = '';
+    document.body.style.backgroundPosition = '';
+    document.body.style.backgroundRepeat = '';
+    document.body.style.minHeight = '';
+  }
+
+  // ============================================
   // Event Bindings & Init
   // ============================================
 
+  function executeReset() {
+    if (isProcessing) return;
+    // Reset all files to uncut
+    for (const entry of uploadedFiles) {
+      entry.cut = false;
+    }
+    // Clear cut results and merge state
+    cutResults = [];
+    mergeOrder = [];
+    // Hide sections
+    el.cutResults.classList.add('hidden');
+    el.cutResults.innerHTML = '';
+    el.mergeSection.classList.add('hidden');
+    el.progressSection.classList.add('hidden');
+    el.mergeResult.classList.add('hidden');
+    el.mergeProgressSection.classList.add('hidden');
+    // Update UI
+    renderFileList();
+    updateCutButton();
+  }
+
   function initEvents() {
     el.cutBtn.addEventListener('click', executeCut);
+    el.resetBtn.addEventListener('click', executeReset);
     el.mergeBtn.addEventListener('click', executeMerge);
   }
 
@@ -1050,6 +1330,7 @@
     initAudioToggle();
     initUpload();
     initEvents();
+    initXMode();
     initFFmpeg();
   }
 

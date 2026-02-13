@@ -64,8 +64,11 @@
       <!-- File List -->
       <div id="fileList" class="file-list hidden"></div>
 
-      <!-- Cut Button -->
-      <button id="cutBtn" class="btn btn-primary hidden" disabled data-i18n="cutBtn">CUT</button>
+      <!-- Cut Buttons -->
+      <div id="cutActions" class="cut-actions hidden">
+        <button id="cutBtn" class="btn btn-primary" disabled data-i18n="cutBtn">CUT</button>
+        <button id="resetBtn" class="btn btn-reset hidden" data-i18n="resetBtn">RESET</button>
+      </div>
 
       <!-- Progress -->
       <div id="progressSection" class="progress-section hidden">
@@ -85,6 +88,7 @@
       <p class="section-note" data-i18n="mergeNote">ドラッグで並び替え</p>
 
       <div id="mergeList" class="merge-list"></div>
+      <div id="mergeSummary" class="merge-summary"></div>
       <div id="mergeWarning" class="merge-warning hidden"></div>
 
       <button id="mergeBtn" class="btn btn-primary" data-i18n="mergeBtn">MERGE</button>
@@ -100,6 +104,8 @@
         <button id="mergeDownloadBtn" class="btn btn-download" data-i18n="mergeDownload">連結ファイルをダウンロード</button>
       </div>
     </section>
+
+    <footer class="version">Ver 1.0</footer>
 
   </div>
 
