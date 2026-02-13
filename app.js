@@ -50,6 +50,9 @@
       zipping: 'ZIP作成中...',
       elapsed: '経過',
       sizeWarn: '大容量ファイルは処理に時間がかかる場合があります',
+      oomWarn: 'メモリ上限超過の可能性',
+      oomDetail: '高解像度+高FPSの動画はブラウザのメモリ上限(約2GB)を超える場合があります。処理に失敗する可能性があるファイル:',
+      oomSkipped: 'メモリ不足でスキップ',
     },
     en: {
       themeBtn_night: 'Day',
@@ -91,6 +94,9 @@
       zipping: 'Creating ZIP...',
       elapsed: 'elapsed',
       sizeWarn: 'Large files may take longer to process',
+      oomWarn: 'Possible memory limit',
+      oomDetail: 'High resolution + high FPS videos may exceed browser memory limit (~2GB). Files that may fail:',
+      oomSkipped: 'Skipped (out of memory)',
     }
   };
 
@@ -606,6 +612,21 @@
     return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
   }
 
+  // Estimate if a file will exceed WASM memory (~2GB)
+  // Rough: frame decode buffer = W*H*1.5 (YUV420) * active frames in encoder
+  // libx264 ultrafast keeps ~4-8 reference frames + working buffers
+  const WASM_MEM_LIMIT = 1.5 * 1024 * 1024 * 1024; // 1.5GB conservative
+  function estimateMemory(entry) {
+    const frameBytes = entry.width * entry.height * 1.5;
+    // Encoder working set: ~10 frames decode + ~10 frames encode + input file
+    return frameBytes * 20 + (entry.size || 0) * 2;
+  }
+
+  function isOomRisk(entry) {
+    if (!entry.width || !entry.height) return false;
+    return estimateMemory(entry) > WASM_MEM_LIMIT;
+  }
+
   function renderFileList() {
     if (uploadedFiles.length === 0) {
       el.fileList.classList.add('hidden');
@@ -614,14 +635,17 @@
 
     el.fileList.classList.remove('hidden');
 
-    // Check if any file is large (>10MB) or high fps (>30)
+    // Check warnings
     const hasHeavy = uploadedFiles.some(e => e.size > 10 * 1024 * 1024 || (e.probedFps || e.fps) > 30);
+    const oomFiles = uploadedFiles.filter(e => isOomRisk(e) && !e.cut);
 
     el.fileList.innerHTML = uploadedFiles.map((entry, i) => {
-      const statusClass = entry.fpsWarning ? ' file-item-warn' : (entry.cut ? ' file-item-done' : '');
+      const oomRisk = isOomRisk(entry);
+      const statusClass = oomRisk ? ' file-item-warn' : (entry.fpsWarning ? ' file-item-warn' : (entry.cut ? ' file-item-done' : ''));
       const probedLabel = entry.probed ? '' : ' <span class="file-item-probing">...</span>';
       const cutBadge = entry.cut ? ' <span class="file-item-badge">CUT</span>' : '';
       const warnLabel = entry.fpsWarning ? `<div class="file-item-warning">${t('fpsWarn')}</div>` : '';
+      const oomLabel = oomRisk && !entry.cut ? `<div class="file-item-warning file-item-oom">${t('oomWarn')}: ${entry.width}x${entry.height}@${entry.probedFps || entry.fps}fps</div>` : '';
       const sizeLabel = entry.size ? formatSize(entry.size) : '';
       return `
         <div class="file-item${statusClass}" data-index="${i}">
@@ -635,12 +659,14 @@
               ${probedLabel}
             </span>
             ${warnLabel}
+            ${oomLabel}
           </div>
           <button class="file-item-remove" data-index="${i}">&times;</button>
         </div>
       `;
     }).join('') +
-    (hasHeavy ? `<div class="file-list-note">${t('sizeWarn')}</div>` : '');
+    (oomFiles.length > 0 ? `<div class="file-list-note file-list-oom">${t('oomDetail')}<br>${oomFiles.map(e => e.name).join(', ')}</div>` :
+     hasHeavy ? `<div class="file-list-note">${t('sizeWarn')}</div>` : '');
 
     el.fileList.querySelectorAll('.file-item-remove').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -753,6 +779,14 @@
           console.warn('Skipping', entry.name, '- not probed or insufficient data');
           setProgress(pctBase, `${t('cutError')}: ${entry.name}`);
           entry.cut = true;  // mark to avoid retry
+          continue;
+        }
+
+        // Guard: skip files likely to cause OOM
+        if (isOomRisk(entry)) {
+          console.warn('Skipping', entry.name, `- OOM risk (${entry.width}x${entry.height}@${entry.fps}fps, est ${(estimateMemory(entry) / 1024 / 1024 / 1024).toFixed(1)}GB)`);
+          currentFileName = `${t('oomSkipped')}: ${entry.name}`;
+          setProgress(pctBase, currentFileName);
           continue;
         }
 

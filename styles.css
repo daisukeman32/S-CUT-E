@@ -391,6 +391,11 @@ body {
   border-radius: 4px;
   padding: 6px 10px;
   margin-top: 6px;
+  line-height: 1.5;
+}
+
+.file-item-oom {
+  font-weight: 600;
 }
 
 .file-item {
