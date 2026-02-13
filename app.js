@@ -46,6 +46,8 @@
       mergeFailed: '連結失敗',
       warningMismatch: '解像度/FPSが一致しません。連結が失敗するか映像に問題が出る可能性があります。',
       fileCount: 'ファイル',
+      zipDownload: 'ZIP一括ダウンロード',
+      zipping: 'ZIP作成中...',
     },
     en: {
       themeBtn_night: 'Day',
@@ -83,6 +85,8 @@
       mergeFailed: 'Merge failed',
       warningMismatch: 'Resolution/FPS mismatch detected. Merge may fail or produce artifacts.',
       fileCount: 'file(s)',
+      zipDownload: 'Download All (ZIP)',
+      zipping: 'Creating ZIP...',
     }
   };
 
@@ -838,14 +842,48 @@
         </div>
         <button class="btn btn-download btn-small" data-index="${i}">${t('download')}</button>
       </div>
-    `).join('');
+    `).join('') +
+    (cutResults.length >= 2 ? `<button class="btn btn-download btn-zip" id="zipDownloadBtn">${t('zipDownload')}</button>` : '');
 
-    el.cutResults.querySelectorAll('.btn-download').forEach(btn => {
+    el.cutResults.querySelectorAll('.btn-download[data-index]').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.dataset.index);
         downloadBlob(cutResults[idx].data, cutResults[idx].name);
       });
     });
+
+    const zipBtn = document.getElementById('zipDownloadBtn');
+    if (zipBtn) {
+      zipBtn.addEventListener('click', downloadZip);
+    }
+  }
+
+  async function downloadZip() {
+    const zipBtn = document.getElementById('zipDownloadBtn');
+    if (!zipBtn) return;
+    zipBtn.disabled = true;
+    zipBtn.textContent = t('zipping');
+
+    try {
+      const zip = new JSZip();
+      for (const r of cutResults) {
+        zip.file(r.name, r.data);
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'cut_files.zip';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      console.error('ZIP error:', err);
+    }
+
+    zipBtn.disabled = false;
+    zipBtn.textContent = t('zipDownload');
   }
 
   // ============================================

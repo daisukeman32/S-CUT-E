@@ -510,6 +510,10 @@ body {
   font-size: 0.75rem;
 }
 
+.btn-zip {
+  margin-top: 10px;
+}
+
 /* --- Cut Actions --- */
 .cut-actions {
   display: flex;
