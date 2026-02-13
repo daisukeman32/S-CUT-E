@@ -1061,21 +1061,33 @@
         inputs.push('-i', `merge_${i}.mp4`);
       }
 
-      // Determine output fps from first clip
+      // Determine output specs from first clip
       const firstClip = cutResults[mergeOrder[0]];
       const outFps = String(Math.round(firstClip.fps));
+      const outW = firstClip.width;
+      const outH = firstClip.height;
 
       // Check if ALL clips in merge order actually have audio
       const mergeWithAudio = mergeOrder.every(idx => cutResults[idx].hasAudio);
 
-      // Build concat filter graph
-      const vStreams = mergeOrder.map((_, i) => `[${i}:v]`).join('');
+      // Build concat filter graph with per-input normalization
+      // Each input is normalized to same fps, resolution, pixel format before concat
+      const normParts = mergeOrder.map((_, i) =>
+        `[${i}:v]fps=${outFps},scale=${outW}:${outH},format=yuv420p[v${i}]`
+      );
+      const concatInputs = mergeOrder.map((_, i) => `[v${i}]`).join('');
+
       let filterGraph;
       if (mergeWithAudio) {
-        const aStreams = mergeOrder.map((_, i) => `[${i}:a]`).join('');
-        filterGraph = `${vStreams}${aStreams}concat=n=${n}:v=1:a=1[outv][outa]`;
+        const aNormParts = mergeOrder.map((_, i) =>
+          `[${i}:a]aresample=async=1[a${i}]`
+        );
+        const aConcatInputs = mergeOrder.map((_, i) => `[a${i}]`).join('');
+        filterGraph = [...normParts, ...aNormParts].join(';') +
+          `;${concatInputs}${aConcatInputs}concat=n=${n}:v=1:a=1[outv][outa]`;
       } else {
-        filterGraph = `${vStreams}concat=n=${n}:v=1:a=0[outv]`;
+        filterGraph = normParts.join(';') +
+          `;${concatInputs}concat=n=${n}:v=1:a=0[outv]`;
       }
 
       const args = [
@@ -1086,13 +1098,18 @@
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-crf', '23',
-        '-r', outFps,
         '-pix_fmt', 'yuv420p',
         '-movflags', '+faststart',
         'merged.mp4'
       ];
 
+      // Log for debugging
+      let mergeLog = '';
+      ffmpeg.setLogger(({ message }) => { mergeLog += message + '\n'; });
+
       await ffmpeg.run(...args);
+
+      ffmpeg.setLogger(() => {});
 
       const mergedData = new Uint8Array(ffmpeg.FS('readFile', 'merged.mp4'));
 
@@ -1110,6 +1127,7 @@
 
     } catch (err) {
       console.error('Merge error:', err);
+      if (typeof mergeLog !== 'undefined') console.error('Merge FFmpeg log:', mergeLog);
       setMergeProgress(0, t('mergeFailed') + ': ' + err.message);
       try {
         ffmpeg.setLogger(() => {});
