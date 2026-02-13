@@ -725,7 +725,7 @@
           continue;
         }
 
-        setProgress(pctBase, `${t('cutting')} ${i + 1}/${uploadedFiles.length}: ${entry.name}`);
+        setProgress(pctBase, `${t('cutting')} ${i + 1}/${uncutFiles.length}: ${entry.name}`);
 
         const fileData = await readFileAsUint8Array(entry.file);
         const inputName = `input_${i}.mp4`;
@@ -781,7 +781,8 @@
           fps: entry.fps,
           width: entry.width,
           height: entry.height,
-          frames: outFrames
+          frames: outFrames,
+          hasAudio: includeAudio
         });
 
         // Reset FS for next file
@@ -852,7 +853,13 @@
   // ============================================
 
   function showMergeSection() {
-    mergeOrder = cutResults.map((_, i) => i);
+    // Preserve existing order, append new results
+    const existingSet = new Set(mergeOrder);
+    for (let i = 0; i < cutResults.length; i++) {
+      if (!existingSet.has(i)) {
+        mergeOrder.push(i);
+      }
+    }
     el.mergeSection.classList.remove('hidden');
     el.mergeResult.classList.add('hidden');
     el.mergeProgressSection.classList.add('hidden');
@@ -1037,27 +1044,55 @@
     setMergeProgress(0, t('mergePreparing'));
 
     try {
-      let fileListContent = '';
+      // Write all files to FS
       for (let i = 0; i < mergeOrder.length; i++) {
         const r = cutResults[mergeOrder[i]];
         const fname = `merge_${i}.mp4`;
         ffmpeg.FS('writeFile', fname, r.data);
-        fileListContent += `file '${fname}'\n`;
         setMergeProgress(Math.round((i / mergeOrder.length) * 30), `${t('mergeWriting')} ${i + 1}/${mergeOrder.length}...`);
       }
 
-      ffmpeg.FS('writeFile', 'filelist.txt', new TextEncoder().encode(fileListContent));
-
       setMergeProgress(30, t('merging'));
 
-      await ffmpeg.run(
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', 'filelist.txt',
-        '-c', 'copy',
+      // Use concat filter with re-encode for reliable timestamp handling
+      const n = mergeOrder.length;
+      const inputs = [];
+      for (let i = 0; i < n; i++) {
+        inputs.push('-i', `merge_${i}.mp4`);
+      }
+
+      // Determine output fps from first clip
+      const firstClip = cutResults[mergeOrder[0]];
+      const outFps = String(Math.round(firstClip.fps));
+
+      // Check if ALL clips in merge order actually have audio
+      const mergeWithAudio = mergeOrder.every(idx => cutResults[idx].hasAudio);
+
+      // Build concat filter graph
+      const vStreams = mergeOrder.map((_, i) => `[${i}:v]`).join('');
+      let filterGraph;
+      if (mergeWithAudio) {
+        const aStreams = mergeOrder.map((_, i) => `[${i}:a]`).join('');
+        filterGraph = `${vStreams}${aStreams}concat=n=${n}:v=1:a=1[outv][outa]`;
+      } else {
+        filterGraph = `${vStreams}concat=n=${n}:v=1:a=0[outv]`;
+      }
+
+      const args = [
+        ...inputs,
+        '-filter_complex', filterGraph,
+        '-map', '[outv]',
+        ...(mergeWithAudio ? ['-map', '[outa]', '-c:a', 'aac', '-b:a', '128k'] : []),
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-crf', '23',
+        '-r', outFps,
+        '-pix_fmt', 'yuv420p',
         '-movflags', '+faststart',
         'merged.mp4'
-      );
+      ];
+
+      await ffmpeg.run(...args);
 
       const mergedData = new Uint8Array(ffmpeg.FS('readFile', 'merged.mp4'));
 
@@ -1278,19 +1313,25 @@
   function applyXTheme() {
     const img = localStorage.getItem('scute-xmode-img');
     if (!img) return;
-    document.body.style.backgroundImage = `url(${img})`;
-    document.body.style.backgroundSize = 'cover';
-    document.body.style.backgroundPosition = 'center top';
-    document.body.style.backgroundRepeat = 'no-repeat';
-    document.body.style.minHeight = '100vh';
+    // Use a fixed overlay div so background doesn't rescale with content height
+    let bg = document.getElementById('xmodeBg');
+    if (!bg) {
+      bg = document.createElement('div');
+      bg.id = 'xmodeBg';
+      document.body.prepend(bg);
+    }
+    bg.style.cssText = `
+      position: fixed; inset: 0; z-index: -1;
+      background-image: url(${img});
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+    `;
   }
 
   function removeXTheme() {
-    document.body.style.backgroundImage = '';
-    document.body.style.backgroundSize = '';
-    document.body.style.backgroundPosition = '';
-    document.body.style.backgroundRepeat = '';
-    document.body.style.minHeight = '';
+    const bg = document.getElementById('xmodeBg');
+    if (bg) bg.remove();
   }
 
   // ============================================
