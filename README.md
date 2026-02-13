@@ -19,7 +19,8 @@ S-CUT-Eは前後1フレームを一括カットし、滑らかなマージを実
 1. MP4ファイルをドラッグ&ドロップ（フォルダ対応）
 2. FFmpegが自動プローブ → 正確なFPS/フレーム数を検出
 3. CUTボタン → 全ファイルの先頭1フレーム+末尾1フレームを一括カット
-4. MERGEセクション → ドラッグで並び替え → MERGE → 1本のシームレス動画
+4. 個別ダウンロード or ZIP一括ダウンロード
+5. MERGEセクション → ドラッグで並び替え → MERGE → 1本のシームレス動画
 ```
 
 ## ユースケース例
@@ -34,15 +35,30 @@ S-CUT-Eは前後1フレームを一括カットし、滑らかなマージを実
 - 全クリップのスタートフレームが同一なので、CUT後の繋ぎ目が完全一致
 - 最終シーン（非ループ素材）も先頭フレームが共通なら、末尾に配置してシームレスに接続
 - MERGE画面でドラッグして順序を自由に変更可能
+- FPS/解像度が異なるファイルも自動正規化して連結可能
+
+## 機能一覧
+
+- 複数MP4一括フレームカット（先頭1f + 末尾1f）
+- Audio ON/OFF切替（音声トリム対応）
+- 個別ダウンロード / ZIP一括ダウンロード
+- ドラッグ&ドロップ並び替え + クリップ複製/削除
+- FPS/解像度不一致ファイルの自動正規化マージ
+- concat filter による正確なタイムスタンプ連結（ラグなし）
+- RESETボタン（設定変更して再カット可能）
+- Night / Day テーマ切替
+- 日本語 / English 切替
 
 ## 技術仕様
 
 | 項目 | 内容 |
 |------|------|
 | FFmpeg | FFmpeg.wasm 0.11.6 (CDN) + @ffmpeg/core 0.11.0 |
+| ZIP生成 | JSZip 3.10.1 (CDN) |
 | フレームカット | `trim=start_frame=1:end_frame=N-1` (フレーム番号指定) |
 | エンコード | libx264 ultrafast CRF23 (速度優先・品質十分) |
-| マージ | concat demuxer + `-c copy` (再エンコード不要) |
+| マージ | concat filter + re-encode（正確なタイムスタンプ生成） |
+| FPS不一致時 | 事前に個別正規化 → concat filter で連結 |
 | メタデータ検出 | FFmpegプローブ (`-c copy -f null -`) |
 | FPS仮検出 | HTML5 Video + requestVideoFrameCallback |
 | 対応形式 | MP4 (H.264 / H.265入力対応) |
@@ -60,7 +76,7 @@ S-CUT-Eは前後1フレームを一括カットし、滑らかなマージを実
 ```
 S-CUT-E/
 ├── index.html       # メインHTML
-├── styles.css       # Night/Dayテーマ対応スタイル
+├── styles.css       # Night/Day/Xテーマ対応スタイル
 ├── app.js           # アプリケーションロジック
 ├── server.js        # 開発サーバー（COOP/COEPヘッダー付き・port 3001）
 ├── package.json     # npm scripts
@@ -88,40 +104,3 @@ npm start
 ```
 
 Netlifyデプロイの場合は `_headers` ファイルがCOOP/COEPヘッダーを設定する。
-
----
-
-## 開発経緯
-
-### Phase 1: 基本実装
-- WEBLOP (`/04_LOP/WEBLOP/`) のFFmpeg.wasm実装パターンを参考に新規作成
-- HTML/CSS/JSの3ファイル構成、server.js + _headers でインフラ整備
-- ファイルドロップ、FFmpeg初期化、フレームカット、マージの基本フロー実装
-
-### Phase 2: FFmpeg.wasm障害対応
-- ディレクトリ名の特殊ダッシュ（U+2010）がローカルcorePathを破壊 → CDN使用に切替
-- `-f null -` プローブがEmscripten FSを破壊 → HTML5 Video検出に切替
-- `ffmpeg.run()` 後にFS全体が壊れる問題 → 毎回 `exit()` + `load()` サイクルで対処
-- `setLogger(null)` が `exit()` 内部でクラッシュ → `setLogger(() => {})` に修正
-
-### Phase 3: フレームカット精度
-- 時間ベースtrim (`trim=start=0.033:end=7.967`) → 精度不足でフレームが削れない
-- FFmpegプローブ導入: `-c copy -f null -` で正確なfps/フレーム数を取得
-- フレーム番号ベースtrim (`trim=start_frame=1:end_frame=N-1`) に切替 → 正確にカット
-
-### Phase 4: UX改善
-- プローブをファイル読み込み時に移動（CUT前に正確なメタデータ表示）
-- 60fps超の警告表示（フレーム補間済みコンテンツ検出）
-- ドラッグ並び替え時にドロップオーバーレイが出るバグ修正（内部ドラッグ vs 外部ファイルドロップの判別）
-- FPSセレクタ（Auto/24/30）→ Autoのみで十分と判断し簡素化
-- CUT済みファイルの追加対応（結果保持のまま追加分だけ再カット）
-- エンコード設定を `fast CRF18` → `ultrafast CRF23` に変更（速度5-10倍向上・サイズ適正化）
-
-### 解決した主要バグ一覧
-1. `setLogger(null)` → exit()クラッシュ
-2. `fps: 0` → 1/0=Infinity でtrim値破壊
-3. ドラッグ並び替えのoff-by-one
-4. FFmpeg復旧失敗時の無限ループ
-5. `Blob([data.buffer])` → オフセットずれリスク
-6. 時間ベースtrimの精度問題 → フレーム番号ベースに切替
-7. 内部ドラッグでドロップオーバーレイ表示
