@@ -725,12 +725,12 @@ body {
 
 /* --- Version --- */
 .version {
-  text-align: right;
-  font-size: 0.6rem;
+  font-size: 0.55rem;
+  font-weight: 400;
   color: var(--text-sub);
-  opacity: 0.6;
   letter-spacing: 0.05em;
-  padding-top: 8px;
+  vertical-align: baseline;
+  margin-left: 2px;
 }
 
 /* --- Utilities --- */
