@@ -48,6 +48,8 @@
       fileCount: 'ファイル',
       zipDownload: 'ZIP一括ダウンロード',
       zipping: 'ZIP作成中...',
+      elapsed: '経過',
+      sizeWarn: '大容量ファイルは処理に時間がかかる場合があります',
     },
     en: {
       themeBtn_night: 'Day',
@@ -87,6 +89,8 @@
       fileCount: 'file(s)',
       zipDownload: 'Download All (ZIP)',
       zipping: 'Creating ZIP...',
+      elapsed: 'elapsed',
+      sizeWarn: 'Large files may take longer to process',
     }
   };
 
@@ -408,7 +412,7 @@
       if (uploadedFiles.length >= MAX_FILES) break;
       if (!file.name.toLowerCase().endsWith('.mp4')) continue;
       if (uploadedFiles.some(u => u.name === file.name && u.file.size === file.size)) continue;
-      uploadedFiles.push({ file, name: file.name, fps: 0, probedFps: 0, totalFrames: 0, width: 0, height: 0, duration: 0, probed: false, fpsWarning: false, cut: false });
+      uploadedFiles.push({ file, name: file.name, size: file.size, fps: 0, probedFps: 0, totalFrames: 0, width: 0, height: 0, duration: 0, probed: false, fpsWarning: false, cut: false });
     }
 
     // Quick metadata via HTML5 Video (instant, rough)
@@ -597,6 +601,11 @@
   // File List Rendering
   // ============================================
 
+  function formatSize(bytes) {
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + 'KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
+  }
+
   function renderFileList() {
     if (uploadedFiles.length === 0) {
       el.fileList.classList.add('hidden');
@@ -604,11 +613,16 @@
     }
 
     el.fileList.classList.remove('hidden');
+
+    // Check if any file is large (>10MB) or high fps (>30)
+    const hasHeavy = uploadedFiles.some(e => e.size > 10 * 1024 * 1024 || (e.probedFps || e.fps) > 30);
+
     el.fileList.innerHTML = uploadedFiles.map((entry, i) => {
       const statusClass = entry.fpsWarning ? ' file-item-warn' : (entry.cut ? ' file-item-done' : '');
       const probedLabel = entry.probed ? '' : ' <span class="file-item-probing">...</span>';
       const cutBadge = entry.cut ? ' <span class="file-item-badge">CUT</span>' : '';
       const warnLabel = entry.fpsWarning ? `<div class="file-item-warning">${t('fpsWarn')}</div>` : '';
+      const sizeLabel = entry.size ? formatSize(entry.size) : '';
       return `
         <div class="file-item${statusClass}" data-index="${i}">
           <div class="file-item-info">
@@ -617,6 +631,7 @@
               <span>${entry.width}x${entry.height}</span>
               <span>${entry.probedFps || entry.fps}fps</span>
               <span>${entry.totalFrames}f</span>
+              <span>${sizeLabel}</span>
               ${probedLabel}
             </span>
             ${warnLabel}
@@ -624,7 +639,8 @@
           <button class="file-item-remove" data-index="${i}">&times;</button>
         </div>
       `;
-    }).join('');
+    }).join('') +
+    (hasHeavy ? `<div class="file-list-note">${t('sizeWarn')}</div>` : '');
 
     el.fileList.querySelectorAll('.file-item-remove').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -716,6 +732,17 @@
 
     const includeAudio = el.audioToggle.checked;
 
+    // Elapsed timer — keeps UI alive so user knows it's not frozen
+    const cutStartTime = Date.now();
+    let currentFileName = '';
+    const elapsedTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - cutStartTime) / 1000);
+      const min = Math.floor(sec / 60);
+      const s = sec % 60;
+      const timeStr = min > 0 ? `${min}:${String(s).padStart(2,'0')}` : `${s}s`;
+      el.progressText.textContent = currentFileName + ` (${t('elapsed')} ${timeStr})`;
+    }, 1000);
+
     for (let i = 0; i < uncutFiles.length; i++) {
       const entry = uncutFiles[i];
       const pctBase = Math.round((i / uncutFiles.length) * 100);
@@ -729,7 +756,8 @@
           continue;
         }
 
-        setProgress(pctBase, `${t('cutting')} ${i + 1}/${uncutFiles.length}: ${entry.name}`);
+        currentFileName = `${t('cutting')} ${i + 1}/${uncutFiles.length}: ${entry.name}`;
+        setProgress(pctBase, currentFileName);
 
         const fileData = await readFileAsUint8Array(entry.file);
         const inputName = `input_${i}.mp4`;
@@ -789,6 +817,9 @@
           hasAudio: includeAudio
         });
 
+        // Release input file reference to free memory
+        entry.file = null;
+
         // Reset FS for next file
         ffmpeg.setLogger(() => {});
         ffmpeg.exit();
@@ -811,6 +842,7 @@
       }
     }
 
+    clearInterval(elapsedTimer);
     setProgress(100, `${t('cutDone')} - ${cutResults.length} ${t('fileCount')}`);
     isProcessing = false;
     updateCutButton();  // hide CUT if all files are now cut
@@ -1083,6 +1115,17 @@
 
     let mergeLog = '';
 
+    // Elapsed timer for merge
+    const mergeStartTime = Date.now();
+    let mergeStatusText = t('mergePreparing');
+    const mergeElapsedTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - mergeStartTime) / 1000);
+      const min = Math.floor(sec / 60);
+      const s = sec % 60;
+      const timeStr = min > 0 ? `${min}:${String(s).padStart(2,'0')}` : `${s}s`;
+      el.mergeProgressText.textContent = mergeStatusText + ` (${t('elapsed')} ${timeStr})`;
+    }, 1000);
+
     try {
       const n = mergeOrder.length;
 
@@ -1104,7 +1147,8 @@
                           clip.width !== targetW ||
                           clip.height !== targetH;
 
-        setMergeProgress(Math.round((i / n) * 40), `${t('mergeWriting')} ${i + 1}/${n}...`);
+        mergeStatusText = `${t('mergeWriting')} ${i + 1}/${n}...`;
+        setMergeProgress(Math.round((i / n) * 40), mergeStatusText);
 
         if (needsNorm) {
           console.log(`[merge] Normalizing clip ${i}: ${clip.fps}fps ${clip.width}x${clip.height} → ${targetFps}fps ${targetW}x${targetH}`);
@@ -1145,7 +1189,8 @@
         ffmpeg.FS('writeFile', `merge_${i}.mp4`, clipData[i]);
       }
 
-      setMergeProgress(50, t('merging'));
+      mergeStatusText = t('merging');
+      setMergeProgress(50, mergeStatusText);
 
       // Step 3: Concat filter (all clips guaranteed to have same specs)
       const inputs = [];
@@ -1190,6 +1235,7 @@
       ffmpeg.exit();
       await ffmpeg.load();
 
+      clearInterval(mergeElapsedTimer);
       setMergeProgress(100, t('mergeComplete'));
 
       el.mergeResult.classList.remove('hidden');
@@ -1198,6 +1244,7 @@
       };
 
     } catch (err) {
+      clearInterval(mergeElapsedTimer);
       console.error('Merge error:', err);
       if (mergeLog) console.error('Merge FFmpeg log:', mergeLog);
       setMergeProgress(0, t('mergeFailed') + ': ' + err.message);
