@@ -456,6 +456,7 @@
         if (probe.totalFrames > 0 && probe.fps > 0) {
           entry.duration = probe.totalFrames / probe.fps;
         }
+        entry.hasAudioStream = probe.hasAudioStream;
 
         // Use probed fps
         entry.fps = entry.probedFps;
@@ -733,14 +734,17 @@
     const width = resMatch ? parseInt(resMatch[1]) : 0;
     const height = resMatch ? parseInt(resMatch[2]) : 0;
 
-    console.log(`[probe] ${inputName}: ${fps}fps, ${totalFrames}frames, ${width}x${height}`);
+    // Detect audio stream presence
+    const hasAudioStream = /Stream.*Audio/.test(probeLog);
+
+    console.log(`[probe] ${inputName}: ${fps}fps, ${totalFrames}frames, ${width}x${height}${hasAudioStream ? ' +audio' : ' no-audio'}`);
 
     // Reset FS after run
     ffmpeg.setLogger(() => {});
     ffmpeg.exit();
     await ffmpeg.load();
 
-    return { fps, totalFrames, width, height };
+    return { fps, totalFrames, width, height, hasAudioStream };
   }
 
   async function executeCut() {
@@ -804,7 +808,7 @@
         const args = ['-i', inputName];
         args.push('-vf', `trim=start_frame=1:end_frame=${endFrame},setpts=PTS-STARTPTS`);
 
-        if (includeAudio) {
+        if (includeAudio && entry.hasAudioStream) {
           const frameDur = 1 / entry.fps;
           const duration = entry.totalFrames / entry.fps;
           const aStart = frameDur;
@@ -837,7 +841,10 @@
 
         const data = ffmpeg.FS('readFile', outputName);
 
-        console.log(`[cut] ${entry.name}: ${entry.totalFrames} → ${outFrames} frames (${entry.fps}fps)`);
+        // Detect if output actually has audio (source may lack audio stream)
+        const hasActualAudio = includeAudio && /Stream.*Audio/.test(cutLog);
+
+        console.log(`[cut] ${entry.name}: ${entry.totalFrames} → ${outFrames} frames (${entry.fps}fps)${hasActualAudio ? ' +audio' : ''}`);
 
         entry.cut = true;
 
@@ -848,7 +855,7 @@
           width: entry.width,
           height: entry.height,
           frames: outFrames,
-          hasAudio: includeAudio
+          hasAudio: hasActualAudio
         });
 
         // Release input file reference to free memory
@@ -1202,6 +1209,7 @@
           }
           normArgs.push('-movflags', '+faststart', 'norm_out.mp4');
 
+          ffmpeg.setLogger(({ message }) => { mergeLog += message + '\n'; });
           await ffmpeg.run(...normArgs);
 
           const normData = new Uint8Array(ffmpeg.FS('readFile', 'norm_out.mp4'));
