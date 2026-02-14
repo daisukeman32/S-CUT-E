@@ -271,6 +271,7 @@
   // ============================================
 
   function initAudioToggle() {
+    el.audioToggle.checked = true;  // Default: Audio ON
     updateAudioLabel();
     el.audioToggle.addEventListener('change', updateAudioLabel);
   }
