@@ -40,12 +40,15 @@ S-CUT-Eは前後1フレームを一括カットし、滑らかなマージを実
 ## 機能一覧
 
 - 複数MP4一括フレームカット（先頭1f + 末尾1f）
-- Audio ON/OFF切替（音声トリム対応）
+- Audio ON/OFF切替（デフォルトON・音声トリム対応）
+- 音声ストリーム自動検出（音声なしファイルも安全に処理）
 - 個別ダウンロード / ZIP一括ダウンロード
 - ドラッグ&ドロップ並び替え + クリップ複製/削除
 - FPS/解像度不一致ファイルの自動正規化マージ
 - concat filter による正確なタイムスタンプ連結（ラグなし）
 - RESETボタン（設定変更して再カット可能）
+- OOM検出: WASMメモリ超過ファイルの自動スキップ
+- カット中の経過時間表示
 - Night / Day テーマ切替
 - 日本語 / English 切替
 
@@ -58,16 +61,20 @@ S-CUT-Eは前後1フレームを一括カットし、滑らかなマージを実
 | フレームカット | `trim=start_frame=1:end_frame=N-1` (フレーム番号指定) |
 | エンコード | libx264 ultrafast CRF23 (速度優先・品質十分) |
 | マージ | concat filter + re-encode（正確なタイムスタンプ生成） |
+| 音声検出 | FFmpegプローブで音声ストリーム有無を自動判定 |
 | FPS不一致時 | 事前に個別正規化 → concat filter で連結 |
 | メタデータ検出 | FFmpegプローブ (`-c copy -f null -`) |
 | FPS仮検出 | HTML5 Video + requestVideoFrameCallback |
+| OOM推定 | `frameBytes * 20 + fileSize * 2` で事前メモリ推定（上限1.5GB） |
 | 対応形式 | MP4 (H.264 / H.265入力対応) |
 | ファイル上限 | 最大50ファイル（推奨30） |
 
 ## 制約・注意事項
 
 - ブラウザ上のWASM実行のため、メモリ上限 ~2GB
+- 高解像度（4K等）× 高FPS動画はOOMリスクあり → 自動検出・スキップ
 - 60fps超のファイルは警告表示（フレーム補間済みの可能性）
+- 音声ストリームがないファイルは Audio ON でも自動的に映像のみで処理
 - SharedArrayBuffer必須（COOP/COEPヘッダー要）
 - FFmpeg.wasm 0.11.xの制約: `ffmpeg.run()` 後にFSが壊れるため、毎回 `exit()` + `load()` でリセット
 
