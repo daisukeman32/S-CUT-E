@@ -858,9 +858,6 @@
           hasAudio: hasActualAudio
         });
 
-        // Release input file reference to free memory
-        entry.file = null;
-
         // Reset FS for next file
         ffmpeg.setLogger(() => {});
         ffmpeg.exit();
