@@ -820,6 +820,7 @@
         }
 
         args.push(
+          '-r', String(Math.round(entry.fps)),
           '-c:v', 'libx264',
           '-preset', 'ultrafast',
           '-crf', '23',
@@ -1177,19 +1178,24 @@
       // Check if ALL clips in merge order actually have audio
       const mergeWithAudio = mergeOrder.every(idx => cutResults[idx].hasAudio);
 
-      // Step 1: Pre-normalize any clips with mismatched fps/resolution
-      // Each normalization runs as a separate FFmpeg pass for reliability
+      // Step 1: Check if ANY clip has mismatched fps/resolution
+      const anyMismatch = mergeOrder.some(idx => {
+        const clip = cutResults[idx];
+        return Math.round(clip.fps) !== targetFps ||
+               clip.width !== targetW ||
+               clip.height !== targetH;
+      });
+
+      // If any mismatch exists, normalize ALL clips for consistency
+      // (mixing normalized + non-normalized clips causes issues in ffmpeg.wasm)
       const clipData = [];
       for (let i = 0; i < n; i++) {
         const clip = cutResults[mergeOrder[i]];
-        const needsNorm = Math.round(clip.fps) !== targetFps ||
-                          clip.width !== targetW ||
-                          clip.height !== targetH;
 
         mergeStatusText = `${t('mergeWriting')} ${i + 1}/${n}...`;
         setMergeProgress(Math.round((i / n) * 40), mergeStatusText);
 
-        if (needsNorm) {
+        if (anyMismatch) {
           console.log(`[merge] Normalizing clip ${i}: ${clip.fps}fps ${clip.width}x${clip.height} → ${targetFps}fps ${targetW}x${targetH}`);
           ffmpeg.FS('writeFile', 'norm_in.mp4', clip.data);
 
@@ -1253,6 +1259,7 @@
         '-filter_complex', filterGraph,
         '-map', '[outv]',
         ...(mergeWithAudio ? ['-map', '[outa]', '-c:a', 'aac', '-b:a', '128k'] : []),
+        '-r', String(targetFps),
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-crf', '23',
