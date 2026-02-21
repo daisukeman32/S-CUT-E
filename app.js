@@ -1307,8 +1307,11 @@
       setMergeProgress(100, t('mergeComplete'));
 
       el.mergeResult.classList.remove('hidden');
+      // Use first clip's name as base for merged filename
+      const firstName = cutResults[mergeOrder[0]].name.replace(/_cut\.mp4$/i, '');
+      const mergedName = firstName + '_merged.mp4';
       el.mergeDownloadBtn.onclick = () => {
-        downloadBlob(mergedData, 'merged.mp4');
+        downloadBlob(mergedData, mergedName);
       };
 
     } catch (err) {
@@ -1545,22 +1548,21 @@
 
   function executeReset() {
     if (isProcessing) return;
-    // Reset all files to uncut
-    for (const entry of uploadedFiles) {
-      entry.cut = false;
-    }
-    // Clear cut results and merge state
+    // Clear everything: uploaded files, cut results, merge state
+    uploadedFiles = [];
     cutResults = [];
     mergeOrder = [];
-    // Hide sections
+    // Hide all sections
+    el.fileList.classList.add('hidden');
+    el.fileList.innerHTML = '';
     el.cutResults.classList.add('hidden');
     el.cutResults.innerHTML = '';
     el.mergeSection.classList.add('hidden');
     el.progressSection.classList.add('hidden');
     el.mergeResult.classList.add('hidden');
     el.mergeProgressSection.classList.add('hidden');
+    el.resetBtn.classList.add('hidden');
     // Update UI
-    renderFileList();
     updateCutButton();
   }
 
