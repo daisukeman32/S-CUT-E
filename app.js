@@ -1230,57 +1230,78 @@
         }
       }
 
-      // Step 2: Write all (now matching) clips to FS
-      for (let i = 0; i < n; i++) {
-        ffmpeg.FS('writeFile', `merge_${i}.mp4`, clipData[i]);
+      // Step 2: Concat — batch if too many clips to avoid OOM
+      const MERGE_BATCH_SIZE = 6;
+
+      // Helper: concat an array of Uint8Array clips into one
+      async function runConcat(clips) {
+        const cn = clips.length;
+        for (let j = 0; j < cn; j++) {
+          ffmpeg.FS('writeFile', `c_${j}.mp4`, clips[j]);
+        }
+        const cInputs = [];
+        for (let j = 0; j < cn; j++) cInputs.push('-i', `c_${j}.mp4`);
+
+        let fg;
+        if (mergeWithAudio) {
+          fg = Array.from({length: cn}, (_, j) => `[${j}:v][${j}:a]`).join('') +
+               `concat=n=${cn}:v=1:a=1[outv][outa]`;
+        } else {
+          fg = Array.from({length: cn}, (_, j) => `[${j}:v]`).join('') +
+               `concat=n=${cn}:v=1:a=0[outv]`;
+        }
+        const cArgs = [
+          ...cInputs, '-filter_complex', fg, '-map', '[outv]',
+          ...(mergeWithAudio ? ['-map', '[outa]', '-c:a', 'aac', '-b:a', '128k'] : []),
+          '-r', String(targetFps),
+          '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+          '-pix_fmt', 'yuv420p', '-movflags', '+faststart', 'concat_out.mp4'
+        ];
+        console.log('[merge] concat args:', cArgs.join(' '));
+        ffmpeg.setLogger(({ message }) => { mergeLog += message + '\n'; });
+        await ffmpeg.run(...cArgs);
+        const result = new Uint8Array(ffmpeg.FS('readFile', 'concat_out.mp4'));
+        ffmpeg.setLogger(() => {});
+        ffmpeg.exit();
+        await ffmpeg.load();
+        return result;
       }
 
+      // Hierarchical batch concat: split into batches until small enough
+      let currentClips = clipData;
+
+      while (currentClips.length > MERGE_BATCH_SIZE) {
+        const nextLevel = [];
+        const numBatches = Math.ceil(currentClips.length / MERGE_BATCH_SIZE);
+
+        for (let b = 0; b < numBatches; b++) {
+          const start = b * MERGE_BATCH_SIZE;
+          const batchClips = currentClips.slice(start, start + MERGE_BATCH_SIZE);
+
+          mergeStatusText = `${t('merging')} (${b + 1}/${numBatches})...`;
+          setMergeProgress(50 + Math.round(((b + 1) / numBatches) * 30), mergeStatusText);
+
+          if (batchClips.length === 1) {
+            nextLevel.push(batchClips[0]);
+          } else {
+            console.log(`[merge] Batch ${b + 1}/${numBatches}: ${batchClips.length} clips`);
+            nextLevel.push(await runConcat(batchClips));
+          }
+        }
+        currentClips = nextLevel;
+      }
+
+      // Final concat
       mergeStatusText = t('merging');
-      setMergeProgress(50, mergeStatusText);
+      setMergeProgress(90, mergeStatusText);
 
-      // Step 3: Concat filter (all clips guaranteed to have same specs)
-      const inputs = [];
-      for (let i = 0; i < n; i++) {
-        inputs.push('-i', `merge_${i}.mp4`);
-      }
-
-      let filterGraph;
-      if (mergeWithAudio) {
-        // Concat filter requires interleaved order: [0:v][0:a][1:v][1:a]...
-        const streams = Array.from({length: n}, (_, i) => `[${i}:v][${i}:a]`).join('');
-        filterGraph = `${streams}concat=n=${n}:v=1:a=1[outv][outa]`;
+      let mergedData;
+      if (currentClips.length === 1) {
+        mergedData = currentClips[0];
       } else {
-        const vStreams = Array.from({length: n}, (_, i) => `[${i}:v]`).join('');
-        filterGraph = `${vStreams}concat=n=${n}:v=1:a=0[outv]`;
+        console.log(`[merge] Final concat: ${currentClips.length} clips`);
+        mergedData = await runConcat(currentClips);
       }
-
-      const args = [
-        ...inputs,
-        '-filter_complex', filterGraph,
-        '-map', '[outv]',
-        ...(mergeWithAudio ? ['-map', '[outa]', '-c:a', 'aac', '-b:a', '128k'] : []),
-        '-r', String(targetFps),
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '23',
-        '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart',
-        'merged.mp4'
-      ];
-
-      console.log('[merge] concat args:', args.join(' '));
-      ffmpeg.setLogger(({ message }) => { mergeLog += message + '\n'; });
-
-      await ffmpeg.run(...args);
-
-      ffmpeg.setLogger(() => {});
-
-      const mergedData = new Uint8Array(ffmpeg.FS('readFile', 'merged.mp4'));
-
-      // Reset FFmpeg (FS breaks after run)
-      ffmpeg.setLogger(() => {});
-      ffmpeg.exit();
-      await ffmpeg.load();
 
       clearInterval(mergeElapsedTimer);
       setMergeProgress(100, t('mergeComplete'));
